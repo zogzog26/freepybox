@@ -41,7 +41,7 @@ app_desc = {
 logger = logging.getLogger(__name__)
 
 class Freepybox:
-    def __init__(self, app_desc=app_desc, token_file=token_file, api_version='v3', timeout=10, protocol='https', tls_verify=None):
+    def __init__(self, app_desc=app_desc, token_file=token_file, api_version='v3', timeout=10, protocol='https', tls_verify=None, prefer_api_domain=True):
         """Freebox OS client.
 
         api_version:
@@ -56,6 +56,11 @@ class Freepybox:
           - None (default): use the bundled Freebox root CA (historical behavior)
           - True/False: pass-through to requests' verify
           - str path: path to a CA bundle file
+
+        prefer_api_domain:
+          - When True (default), try to resolve the official Freebox `api_domain`
+            (via /api_version) and use it as the host for subsequent API calls.
+            This can be required for HTTPS endpoints on some setups.
         """
         self.token_file = token_file
         self.api_version = api_version
@@ -63,8 +68,9 @@ class Freepybox:
         self.app_desc = app_desc
         self.protocol = protocol
         self.tls_verify = tls_verify
+        self.prefer_api_domain = prefer_api_domain
 
-    def open(self, host, port, protocol=None, tls_verify=None):
+    def open(self, host, port, protocol=None, tls_verify=None, prefer_api_domain=None):
         '''
         Open a session to the freebox, get a valid access module
         and instantiate freebox modules
@@ -76,6 +82,8 @@ class Freepybox:
             self.protocol = protocol
         if tls_verify is not None:
             self.tls_verify = tls_verify
+        if prefer_api_domain is not None:
+            self.prefer_api_domain = prefer_api_domain
 
         self.session = requests.Session()
 
@@ -121,10 +129,18 @@ class Freepybox:
 
         # On recent Freebox models (e.g. Pop / Server v8), the API can be v15+.
         # Allow auto-detection to avoid hardcoding v3/v4...
+        api_domain = None
         if str(api_version).lower() == 'auto':
-            api_version = self._detect_api_version(host, port, protocol, timeout)
+            api_version, api_domain = self._detect_api_version(host, port, protocol, timeout)
 
-        base_url = self._get_base_url(host, port, api_version, protocol)
+        effective_host = host
+        # If requested, prefer the official api_domain returned by /api_version.
+        # Only do it for HTTPS: api_domain is typically exposed on the HTTPS port,
+        # not on the LAN HTTP port.
+        if protocol == 'https' and self.prefer_api_domain and api_domain:
+            effective_host = api_domain
+
+        base_url = self._get_base_url(effective_host, port, api_version, protocol)
 
         # Read stored application token
         logger.info('Read application authorization file')
@@ -286,17 +302,20 @@ class Freepybox:
     def _detect_api_version(self, host, port, protocol='https', timeout=10):
         """Detect Freebox API major version via /api_version.
 
-        Returns a string like "v15".
+        Returns (api_version, api_domain).
+        - api_version: string like "v15"
+        - api_domain: the official domain like "xxxxxx.fbxos.fr" (may be None)
         """
         url = '{0}://{1}:{2}/api_version'.format(protocol, host, port)
         r = self.session.get(url, timeout=timeout)
         resp = r.json()
         api_version = resp.get('api_version')
+        api_domain = resp.get('api_domain')
         if not api_version:
             raise AuthorizationError('api_version detection failed')
 
         major = str(api_version).split('.')[0]
-        return 'v{0}'.format(major)
+        return ('v{0}'.format(major), api_domain)
 
 
     def _get_base_url(self, host, port, freebox_api_version, protocol='https'):
