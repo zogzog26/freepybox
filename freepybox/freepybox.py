@@ -42,6 +42,12 @@ logger = logging.getLogger(__name__)
 
 class Freepybox:
     def __init__(self, app_desc=app_desc, token_file=token_file, api_version='v3', timeout=10):
+        """Freebox OS client.
+
+        api_version:
+          - "v3", "v4", "v15", ... (explicit value)
+          - "auto": detects the major API version via the /api_version endpoint
+        """
         self.token_file = token_file
         self.api_version = api_version
         self.timeout = timeout
@@ -86,8 +92,13 @@ class Freepybox:
 
     def _get_freebox_access(self, host, port, api_version, token_file, app_desc, timeout=10):
         '''
-        Returns an access object used for HTTP requests.
+        Returns an Access object used for HTTP requests.
         '''
+
+        # On recent Freebox models (e.g. Pop / Server v8), the API can be v15+.
+        # Allow auto-detection to avoid hardcoding v3/v4...
+        if str(api_version).lower() == 'auto':
+            api_version = self._detect_api_version(host, port, timeout)
 
         base_url = self._get_base_url(host, port, api_version)
 
@@ -246,6 +257,22 @@ class Freepybox:
             raise AuthorizationError('get_challenge failed')
 
         return resp['result']['challenge']
+
+
+    def _detect_api_version(self, host, port, timeout=10):
+        """Detect Freebox API major version via /api_version.
+
+        Returns a string like "v15".
+        """
+        url = 'https://{0}:{1}/api_version'.format(host, port)
+        r = self.session.get(url, timeout=timeout)
+        resp = r.json()
+        api_version = resp.get('api_version')
+        if not api_version:
+            raise AuthorizationError('api_version detection failed')
+
+        major = str(api_version).split('.')[0]
+        return 'v{0}'.format(major)
 
 
     def _get_base_url(self, host, port, freebox_api_version):
