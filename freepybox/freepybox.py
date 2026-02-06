@@ -41,29 +41,53 @@ app_desc = {
 logger = logging.getLogger(__name__)
 
 class Freepybox:
-    def __init__(self, app_desc=app_desc, token_file=token_file, api_version='v3', timeout=10):
+    def __init__(self, app_desc=app_desc, token_file=token_file, api_version='v3', timeout=10, protocol='https', tls_verify=None):
         """Freebox OS client.
 
         api_version:
           - "v3", "v4", "v15", ... (explicit value)
           - "auto": detects the major API version via the /api_version endpoint
+
+        protocol:
+          - "https" (default)
+          - "http" (useful on LAN when TLS validation is not set up)
+
+        tls_verify:
+          - None (default): use the bundled Freebox root CA (historical behavior)
+          - True/False: pass-through to requests' verify
+          - str path: path to a CA bundle file
         """
         self.token_file = token_file
         self.api_version = api_version
         self.timeout = timeout
         self.app_desc = app_desc
+        self.protocol = protocol
+        self.tls_verify = tls_verify
 
-    def open(self, host, port):
+    def open(self, host, port, protocol=None, tls_verify=None):
         '''
         Open a session to the freebox, get a valid access module
         and instantiate freebox modules
         '''
         if not self._is_app_desc_valid(self.app_desc): raise InvalidTokenError('invalid application descriptor')
 
-        self.session = requests.Session()
-        self.session.verify = os.path.join(os.path.dirname(__file__), 'freebox_root_ca.pem')
+        # Allow overriding protocol / TLS behavior per connection.
+        if protocol is not None:
+            self.protocol = protocol
+        if tls_verify is not None:
+            self.tls_verify = tls_verify
 
-        self._access = self._get_freebox_access(host, port, self.api_version, self.token_file, self.app_desc, self.timeout)
+        self.session = requests.Session()
+
+        # For HTTPS, default to the bundled CA (historical behavior) unless overridden.
+        # For HTTP, requests ignores TLS verification anyway.
+        if self.protocol == 'https':
+            if self.tls_verify is None:
+                self.session.verify = os.path.join(os.path.dirname(__file__), 'freebox_root_ca.pem')
+            else:
+                self.session.verify = self.tls_verify
+
+        self._access = self._get_freebox_access(host, port, self.api_version, self.token_file, self.app_desc, self.timeout, protocol=self.protocol)
 
         # Instantiate freebox modules
         self.system = System(self._access)
@@ -90,7 +114,7 @@ class Freepybox:
         self._access.post('login/logout')
 
 
-    def _get_freebox_access(self, host, port, api_version, token_file, app_desc, timeout=10):
+    def _get_freebox_access(self, host, port, api_version, token_file, app_desc, timeout=10, protocol='https'):
         '''
         Returns an Access object used for HTTP requests.
         '''
@@ -98,9 +122,9 @@ class Freepybox:
         # On recent Freebox models (e.g. Pop / Server v8), the API can be v15+.
         # Allow auto-detection to avoid hardcoding v3/v4...
         if str(api_version).lower() == 'auto':
-            api_version = self._detect_api_version(host, port, timeout)
+            api_version = self._detect_api_version(host, port, protocol, timeout)
 
-        base_url = self._get_base_url(host, port, api_version)
+        base_url = self._get_base_url(host, port, api_version, protocol)
 
         # Read stored application token
         logger.info('Read application authorization file')
@@ -259,12 +283,12 @@ class Freepybox:
         return resp['result']['challenge']
 
 
-    def _detect_api_version(self, host, port, timeout=10):
+    def _detect_api_version(self, host, port, protocol='https', timeout=10):
         """Detect Freebox API major version via /api_version.
 
         Returns a string like "v15".
         """
-        url = 'https://{0}:{1}/api_version'.format(host, port)
+        url = '{0}://{1}:{2}/api_version'.format(protocol, host, port)
         r = self.session.get(url, timeout=timeout)
         resp = r.json()
         api_version = resp.get('api_version')
@@ -275,12 +299,12 @@ class Freepybox:
         return 'v{0}'.format(major)
 
 
-    def _get_base_url(self, host, port, freebox_api_version):
+    def _get_base_url(self, host, port, freebox_api_version, protocol='https'):
         '''
-        Returns base url for HTTPS requests
+        Returns base url for HTTP(S) requests
         :return:
         '''
-        return 'https://{0}:{1}/api/{2}/'.format(host, port, freebox_api_version)
+        return '{0}://{1}:{2}/api/{3}/'.format(protocol, host, port, freebox_api_version)
 
 
     def _is_app_desc_valid(self, app_desc):
