@@ -42,6 +42,12 @@ logger = logging.getLogger(__name__)
 
 class Freepybox:
     def __init__(self, app_desc=app_desc, token_file=token_file, api_version='v3', timeout=10):
+        """Client Freebox OS.
+
+        api_version:
+          - "v3", "v4", "v15", ... (valeur explicite)
+          - "auto" : détecte la version majeure via l'endpoint /api_version
+        """
         self.token_file = token_file
         self.api_version = api_version
         self.timeout = timeout
@@ -86,8 +92,13 @@ class Freepybox:
 
     def _get_freebox_access(self, host, port, api_version, token_file, app_desc, timeout=10):
         '''
-        Returns an access object used for HTTP requests.
+        Retourne un objet Access utilisé pour les requêtes HTTP.
         '''
+
+        # Sur les Freebox récentes (ex: Pop / Server v8), l'API peut être en v15+.
+        # Permettre la détection automatique pour éviter le hardcode (v3/v4...).
+        if str(api_version).lower() == 'auto':
+            api_version = self._detect_api_version(host, port, timeout)
 
         base_url = self._get_base_url(host, port, api_version)
 
@@ -248,10 +259,25 @@ class Freepybox:
         return resp['result']['challenge']
 
 
+    def _detect_api_version(self, host, port, timeout=10):
+        """Détecte la version majeure de l'API Freebox via /api_version.
+
+        Retourne une chaîne du type "v15".
+        """
+        url = 'https://{0}:{1}/api_version'.format(host, port)
+        r = self.session.get(url, timeout=timeout)
+        resp = r.json()
+        api_version = resp.get('api_version')
+        if not api_version:
+            raise AuthorizationError('api_version detection failed')
+
+        major = str(api_version).split('.')[0]
+        return 'v{0}'.format(major)
+
+
     def _get_base_url(self, host, port, freebox_api_version):
         '''
-        Returns base url for HTTPS requests
-        :return:
+        Retourne l'URL de base pour les requêtes HTTPS.
         '''
         return 'https://{0}:{1}/api/{2}/'.format(host, port, freebox_api_version)
 
